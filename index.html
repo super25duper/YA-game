@@ -1,1 +1,439 @@
+<!DOCTYPE html><html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Red vs Blue Arena</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+    overflow: hidden;
+    touch-action: none;
+    font-family: sans-serif;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: white;
+  } 
+  #ui {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    color: #333;
+    font-size: 14px;
+    background: rgba(255,255,255,0.8);
+    padding: 8px;
+    border-radius: 10px;
+    z-index: 10;
+  }
+  #startScreen, #gameOverScreen {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,0.95);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    font-size: 24px;
+    z-index: 20;
+  }
+  button {
+    font-size: 18px;
+    padding: 10px 20px;
+    margin-top: 15px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body><canvas id="game"></canvas>
 
+<div id="ui" style="display:none;">
+  <div>Red Score: <span id="redScore">0</span></div>
+  <div>Blue Score: <span id="blueScore">0</span></div>
+  <div id="timer">Time: 0</div>
+  <div id="winner" style="font-weight: bold; margin-top: 10px;"></div>
+</div><div id="startScreen">
+  <div>Welcome to Red vs Blue Arena</div>
+  <button id="startBtn">Start Game</button>
+</div><div id="gameOverScreen" style="display:none;">
+  <div id="gameOverText"></div>
+  <button id="restartBtn">Play Again</button>
+</div><script>
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  let W = canvas.width = window.innerWidth;
+  let H = canvas.height = window.innerHeight;
+
+  const ui = document.getElementById("ui");
+  const startScreen = document.getElementById("startScreen");
+  const gameOverScreen = document.getElementById("gameOverScreen");
+  const gameOverText = document.getElementById("gameOverText");
+
+  const startBtn = document.getElementById("startBtn");
+  const restartBtn = document.getElementById("restartBtn");
+
+  let redClicks = 0, blueClicks = 0;
+  const requiredClicks = 17;
+  let balls = [];
+  let powerups = [];
+  let chaosZones = [];
+  let gameTime = 0;
+  let gameOver = false;
+  let gameStarted = false;
+
+  const scores = { red: 0, blue: 0 };
+
+  class Ball {
+    constructor(x, y, color, value) {
+      this.x = x;
+      this.y = y;
+      this.vx = (Math.random() - 0.5) * 3;
+      this.vy = (Math.random() - 0.5) * 3;
+      this.color = color;
+      this.value = parseFloat(value.toFixed(2));
+      this.radius = Math.sqrt(this.value) + 10;
+      this.mergeCooldown = 0;
+    }
+    update() {
+      this.x += this.vx;
+      this.y += this.vy;
+
+      if (this.mergeCooldown > 0) this.mergeCooldown--;
+
+      for (const zone of chaosZones) {
+        if (Math.hypot(this.x - zone.x, this.y - zone.y) < 100) {
+          this.vx += (Math.random() - 0.5) * 0.4;
+          this.vy += (Math.random() - 0.5) * 0.4;
+        }
+      }
+
+      if (this.x - this.radius < 0) {
+        this.x = this.radius;
+        this.vx *= -1;
+      }
+      if (this.x + this.radius > W) {
+        this.x = W - this.radius;
+        this.vx *= -1;
+      }
+      if (this.y - this.radius < 0) {
+        this.y = this.radius;
+        this.vy *= -1;
+      }
+      if (this.y + this.radius > H) {
+        this.y = H - this.radius;
+        this.vy *= -1;
+      }
+
+      this.radius = Math.sqrt(this.value) + 10;
+
+      if (this.value > 500) {
+        splitBall(this);
+      }
+    }
+    draw() {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = `${Math.max(10, this.radius / 1.2)}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(Math.round(this.value), this.x, this.y);
+    }
+  }
+
+  class PowerUp {
+    constructor() {
+      this.x = Math.random() * W;
+      this.y = Math.random() * H;
+      this.radius = 15;
+    }
+    draw() {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.fillStyle = "#0f0";
+      ctx.fill();
+    }
+  }
+
+  function spawnBall(color) {
+    let maxVal = balls.length ? Math.max(...balls.map(b => b.value)) : 40;
+    let val = Math.max(10, maxVal / 4);
+    val = parseFloat(val.toFixed(2));
+
+    const x = Math.random() * (W * 0.6) + W * 0.2;
+    const y = color === "red" ? 50 : H - 50;
+    const ball = new Ball(x, y, color, val);
+    balls.push(ball);
+  }
+
+  function spawnPowerUp() { powerups.push(new PowerUp()); }
+
+  function spawnChaosZone() {
+    chaosZones.push({ x: Math.random() * W, y: Math.random() * H });
+    setTimeout(() => chaosZones.shift(), 5000);
+  }
+
+  function mergeBalls(b1, b2) {
+    if (b1.color !== b2.color) return;
+    const newValue = b1.value + b2.value;
+    const newX = (b1.x + b2.x) / 2;
+    const newY = (b1.y + b2.y) / 2;
+    const newBall = new Ball(newX, newY, b1.color, newValue);
+    balls.splice(balls.indexOf(b1), 1);
+    balls.splice(balls.indexOf(b2), 1);
+    balls.push(newBall);
+  }
+
+  function splitBall(ball) {
+    const newValue = ball.value / 2;
+    if (newValue < 5) return;
+
+    const angle = Math.random() * Math.PI * 2;
+    const offset = 20;
+
+    const b1 = new Ball(ball.x + Math.cos(angle) * offset, ball.y + Math.sin(angle) * offset, ball.color, newValue);
+    const b2 = new Ball(ball.x - Math.cos(angle) * offset, ball.y - Math.sin(angle) * offset, ball.color, newValue);
+
+    b1.vx += Math.cos(angle) * 2;
+    b1.vy += Math.sin(angle) * 2;
+    b2.vx -= Math.cos(angle) * 2;
+    b2.vy -= Math.sin(angle) * 2;
+
+    b1.mergeCooldown = 180;
+    b2.mergeCooldown = 180;
+
+    const index = balls.indexOf(ball);
+    if (index !== -1) balls.splice(index, 1);
+
+    balls.push(b1, b2);
+  }
+
+  let splitInterval;
+  let growthInterval;
+
+  function startGame() {
+    balls = [];
+    powerups = [];
+    chaosZones = [];
+    redClicks = 0;
+    blueClicks = 0;
+    gameTime = 0;
+    gameOver = false;
+
+    balls.push(new Ball(W/2, 100, "red", 40));
+    balls.push(new Ball(W/2, H-100, "blue", 40));
+
+    ui.style.display = "block";
+    startScreen.style.display = "none";
+    gameOverScreen.style.display = "none";
+
+    splitInterval = setInterval(() => {
+      if (gameOver) return;
+      const largest = balls.reduce((max, b) => (b.value > (max?.value || 0) ? b : max), null);
+      if (largest) splitBall(largest);
+    }, 15000);
+
+    growthInterval = null;
+    gameStarted = true;
+    loop();
+  }
+
+  function endGame() {
+    gameOver = true;
+    clearInterval(splitInterval);
+    clearInterval(growthInterval);
+    ui.style.display = "none";
+    gameOverScreen.style.display = "flex";
+
+    const redBalls = balls.filter(b => b.color === "red");
+    const blueBalls = balls.filter(b => b.color === "blue");
+
+    if (redBalls.length === 0 && blueBalls.length === 0) {
+      gameOverText.textContent = "Draw!";
+    } else if (redBalls.length === 0) {
+      gameOverText.textContent = "Blue Wins!";
+    } else if (blueBalls.length === 0) {
+      gameOverText.textContent = "Red Wins!";
+    }
+  }
+
+  canvas.addEventListener("touchstart", (e) => {
+    if (!gameStarted || gameOver) return;
+    for (const touch of e.touches) {
+      const y = touch.clientY;
+      if (y < H / 2) redClicks++;
+      else blueClicks++;
+    }
+  });
+
+  setInterval(spawnPowerUp, 7000);
+  setInterval(spawnChaosZone, 10000);
+
+  function update() {
+    if (!gameStarted || gameOver) return;
+
+    gameTime++;
+
+    document.getElementById("timer").textContent = `Time: ${Math.floor(gameTime / 60)}`;
+
+    if (gameTime < 1800) {
+      if (redClicks >= requiredClicks) {
+        spawnBall("red");
+        redClicks = 0;
+      }
+      if (blueClicks >= requiredClicks) {
+        spawnBall("blue");
+        blueClicks = 0;
+      }
+    } else {
+      if (!growthInterval) {
+        growthInterval = setInterval(() => {
+          if (gameOver) return;
+          balls.forEach(b => b.value *= 1.15);
+        }, 2000);
+      }
+    }
+
+    balls.forEach(ball => ball.update());
+
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < a.radius + b.radius) {
+          if (a.color === b.color) {
+            if (a.mergeCooldown === 0 && b.mergeCooldown === 0) {
+              mergeBalls(a, b);
+              i = -1;
+              break;
+            }
+          } else {
+            if (Math.abs(a.value - b.value) < 1) {
+              const angle = Math.atan2(dy, dx);
+              a.vx += Math.cos(angle);
+              a.vy += Math.sin(angle);
+              b.vx -= Math.cos(angle);
+              b.vy -= Math.sin(angle);
+            } else {
+              let winner = a.value >= b.value ? a : b;
+              let loser = winner === a ? b : a;
+              const lost = loser.value * 0.3;
+              loser.value -= lost;
+              winner.value += lost;
+              if (loser.value < 1) balls.splice(balls.indexOf(loser), 1);
+            }
+          }
+        }
+      }
+    }
+// איסוף פאוראפים (תנאים לפי קבוצה ויחס הכוח)
+for (let i = powerups.length - 1; i >= 0; i--) {
+  for (const ball of balls) {
+    const dx = ball.x - powerups[i].x;
+    const dy = ball.y - powerups[i].y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < ball.radius + powerups[i].radius) {
+      const redScore = scores.red;
+      const blueScore = scores.blue;
+      const isRedWeak = redScore < blueScore;
+      const isBlueWeak = blueScore < redScore;
+      const ballScore = ball.color === "red" ? redScore : blueScore;
+      const opponentScore = ball.color === "red" ? blueScore : redScore;
+
+      const isWeaker = (ball.color === "red" && isRedWeak) || (ball.color === "blue" && isBlueWeak);
+      const opponentIsTwiceStronger = opponentScore >= 2 * ballScore;
+
+      if (isWeaker) {
+        ball.value *= 2;
+
+        if (opponentIsTwiceStronger) {
+          // יצירת 3 כדורים חדשים קטנים
+          let maxVal = balls.length ? Math.max(...balls.map(b => b.value)) : 40;
+          let newVal = Math.max(10, maxVal / 4);
+
+          for (let k = 0; k < 3; k++) {
+            const angle = Math.random() * Math.PI * 2;
+            const offset = 30;
+            const newBall = new Ball(
+              ball.x + Math.cos(angle) * offset,
+              ball.y + Math.sin(angle) * offset,
+              ball.color,
+              newVal
+            );
+            balls.push(newBall);
+          }
+        }
+      } else {
+        ball.value *= 1.5;
+      }
+
+      powerups.splice(i, 1);
+      break;
+    }
+  }
+}
+
+    scores.red = balls.filter(b => b.color === "red").reduce((s, b) => s + b.value, 0);
+    scores.blue = balls.filter(b => b.color === "blue").reduce((s, b) => s + b.value, 0);
+
+    document.getElementById("redScore").textContent = Math.round(scores.red);
+    document.getElementById("blueScore").textContent = Math.round(scores.blue);
+
+    const redBalls = balls.filter(b => b.color === "red");
+    const blueBalls = balls.filter(b => b.color === "blue");
+
+    if (redBalls.length === 0 || blueBalls.length === 0) {
+      endGame();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.beginPath();
+    ctx.moveTo(0, H / 2);
+    ctx.lineTo(W, H / 2);
+    ctx.strokeStyle = "#ccc";
+    ctx.stroke();
+
+    ctx.fillStyle = "red";
+    ctx.fillRect(W / 2 - 40, 0, 80, 10);
+    ctx.fillStyle = "blue";
+    ctx.fillRect(W / 2 - 40, H - 10, 80, 10);
+
+    for (const zone of chaosZones) {
+      ctx.beginPath();
+      ctx.arc(zone.x, zone.y, 100, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(200,200,255,0.1)";
+      ctx.fill();
+    }
+
+    balls.forEach(ball => ball.draw());
+    powerups.forEach(pu => pu.draw());
+  }
+
+  function loop() {
+    update();
+    draw();
+    if (!gameOver) requestAnimationFrame(loop);
+  }
+
+  window.addEventListener("resize", () => {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  });
+
+  startBtn.addEventListener("click", () => {
+    if (!gameStarted) startGame();
+  });
+
+  restartBtn.addEventListener("click", () => {
+    startGame();
+  });
+</script></body>
+</html>
